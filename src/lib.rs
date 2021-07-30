@@ -9,8 +9,8 @@ use rusoto_core::RusotoError;
 use rusoto_kms::{
     GetPublicKeyError, GetPublicKeyRequest, Kms, KmsClient, SignError, SignRequest, SignResponse,
 };
+use tracing::{debug, instrument, trace};
 use utils::{apply_eip155, rsig_to_ethsig, verifying_key_to_address};
-
 mod utils;
 
 #[derive(Clone)]
@@ -65,43 +65,68 @@ impl From<String> for AwsSignerError {
     }
 }
 
+#[instrument(err, skip(kms))]
 async fn request_get_pubkey(
     kms: &KmsClient,
     key_id: String,
 ) -> Result<rusoto_kms::GetPublicKeyResponse, RusotoError<GetPublicKeyError>> {
+    debug!("Dispatching get_public_key");
+
     let req = GetPublicKeyRequest {
         grant_tokens: None,
         key_id,
     };
-    kms.get_public_key(req).await
+    trace!("{:?}", &req);
+    let resp = kms.get_public_key(req).await;
+    trace!("{:?}", &resp);
+    resp
 }
 
-async fn request_sign_digest(
+#[instrument(err, skip(kms))]
+async fn request_sign_digest<T>(
     kms: &KmsClient,
-    key_id: String,
+    key_id: T,
     digest: [u8; 32],
-) -> Result<SignResponse, RusotoError<SignError>> {
+) -> Result<SignResponse, RusotoError<SignError>>
+where
+    T: AsRef<str> + std::fmt::Debug,
+{
+    debug!("Dispatching sign");
     let req = SignRequest {
         grant_tokens: None,
-        key_id,
+        key_id: key_id.as_ref().to_owned(),
         message: digest.to_vec().into(),
         message_type: Some("DIGEST".to_owned()),
         signing_algorithm: "ECDSA_SHA_256".to_owned(),
     };
-
-    kms.sign(req).await
+    trace!("{:?}", &req);
+    let resp = kms.sign(req).await;
+    trace!("{:?}", &resp);
+    resp
 }
 
 impl<'a> AwsSigner<'a> {
-    pub async fn new(
+    #[instrument(err, skip(kms))]
+    pub async fn new<T>(
         kms: &'a KmsClient,
-        key_id: String,
+        key_id: T,
         chain_id: u64,
-    ) -> Result<AwsSigner<'a>, AwsSignerError> {
+    ) -> Result<AwsSigner<'a>, AwsSignerError>
+    where
+        T: AsRef<str> + std::fmt::Debug,
+    {
+        let key_id = key_id.as_ref().to_owned();
         let pubkey = request_get_pubkey(kms, key_id.clone())
             .await
             .map(utils::decode_pubkey)??;
         let address = verifying_key_to_address(&pubkey);
+
+        debug!(
+            "Instantiated AWS signer with pubkey 0x{} and address 0x{}",
+            hex::encode(&pubkey.to_bytes()),
+            hex::encode(&address)
+        );
+
         Ok(Self {
             kms,
             chain_id,
@@ -111,21 +136,27 @@ impl<'a> AwsSigner<'a> {
         })
     }
 
-    pub async fn get_pubkey_for_key(&self, key_id: String) -> Result<VerifyingKey, AwsSignerError> {
-        Ok(request_get_pubkey(&self.kms, key_id)
+    pub async fn get_pubkey_for_key<T>(&self, key_id: T) -> Result<VerifyingKey, AwsSignerError>
+    where
+        T: AsRef<str> + std::fmt::Debug,
+    {
+        Ok(request_get_pubkey(&self.kms, key_id.as_ref().to_owned())
             .await
             .map(utils::decode_pubkey)??)
     }
 
     pub async fn get_pubkey(&self) -> Result<VerifyingKey, AwsSignerError> {
-        self.get_pubkey_for_key(self.key_id.clone()).await
+        self.get_pubkey_for_key(&self.key_id).await
     }
 
-    pub async fn sign_digest_with_key(
+    pub async fn sign_digest_with_key<T>(
         &self,
-        key_id: String,
+        key_id: T,
         digest: [u8; 32],
-    ) -> Result<KSig, AwsSignerError> {
+    ) -> Result<KSig, AwsSignerError>
+    where
+        T: AsRef<str> + std::fmt::Debug,
+    {
         Ok(request_sign_digest(&self.kms, key_id, digest)
             .await
             .map(utils::decode_signature)??)
@@ -135,6 +166,7 @@ impl<'a> AwsSigner<'a> {
         self.sign_digest_with_key(self.key_id.clone(), digest).await
     }
 
+    #[instrument(err)]
     async fn sign_digest_with_eip155(&self, digest: H256) -> Result<EthSig, AwsSignerError> {
         let sig = self.sign_digest(digest.into()).await?;
 
@@ -143,6 +175,7 @@ impl<'a> AwsSigner<'a> {
 
         let mut sig = rsig_to_ethsig(&sig);
         apply_eip155(&mut sig, self.chain_id);
+        trace!("{}", sig.v);
         Ok(sig)
     }
 }
@@ -151,16 +184,20 @@ impl<'a> AwsSigner<'a> {
 impl<'a> ethers::prelude::Signer for AwsSigner<'a> {
     type Error = AwsSignerError;
 
+    #[instrument(err, skip(message))]
     async fn sign_message<S: Send + Sync + AsRef<[u8]>>(
         &self,
         message: S,
     ) -> Result<EthSig, Self::Error> {
         let message = message.as_ref();
         let message_hash = hash_message(message);
+        trace!("{:?}", message_hash);
+        trace!("{:?}", message);
 
         self.sign_digest_with_eip155(message_hash).await
     }
 
+    #[instrument(err)]
     async fn sign_transaction(
         &self,
         tx: &ethers::prelude::TransactionRequest,
