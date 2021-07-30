@@ -1,0 +1,15 @@
+[package]
+name = "ethers-aws"
+version = "0.1.0"
+edition = "2018"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+k256 = "0.7.3"
+ethers = "0.2.2"
+rusoto_core = "0.47.0"
+rusoto_kms = "0.47.0"
+thiserror = "1.0.26"
+async-trait = "0.1.51"
+base64 = "0.13.0"
