@@ -24,7 +24,22 @@ pub struct AwsSigner<'a> {
 
 impl<'a> std::fmt::Debug for AwsSigner<'a> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "AwsSigner")
+        f.debug_struct("AwsSigner")
+            .field("key_id", &self.key_id)
+            .field("chain_id", &self.chain_id)
+            .field("pubkey", &self.pubkey)
+            .field("address", &self.address)
+            .finish()
+    }
+}
+
+impl<'a> std::fmt::Display for AwsSigner<'a> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "AwsSigner {{ address: {}, chain_id: {}, key_id: {} }}",
+            self.address, self.chain_id, self.key_id
+        )
     }
 }
 
@@ -161,8 +176,26 @@ impl<'a> ethers::prelude::Signer for AwsSigner<'a> {
 
 #[cfg(test)]
 mod tests {
-    #[test]
-    fn it_works() {
-        assert_eq!(2 + 2, 4);
+    use ethers::prelude::Signer;
+    use rusoto_core::{credential::EnvironmentProvider, Client, HttpClient, Region};
+
+    use super::*;
+
+    #[tokio::test]
+    async fn it_signs_messages() {
+        let chain_id = 1;
+
+        let client = Client::new_with(EnvironmentProvider::default(), HttpClient::new().unwrap());
+        let client = KmsClient::new_with_client(client, Region::UsWest1);
+        let signer = AwsSigner::new(&client, "".to_owned(), chain_id)
+            .await
+            .unwrap();
+
+        dbg!(&signer);
+
+        let message = vec![0, 1, 2, 3];
+
+        let sig = signer.sign_message(&message).await.unwrap();
+        sig.verify(message, signer.address).expect("valid sig");
     }
 }
