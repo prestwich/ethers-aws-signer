@@ -214,19 +214,31 @@ impl<'a> ethers::prelude::Signer for AwsSigner<'a> {
 #[cfg(test)]
 mod tests {
     use ethers::prelude::Signer;
-    use rusoto_core::{credential::EnvironmentProvider, Client, HttpClient, Region};
+    use rusoto_core::{credential::StaticProvider, Client, HttpClient, Region};
 
     use super::*;
 
     #[tokio::test]
     async fn it_signs_messages() {
         let chain_id = 1;
+        let access_key = "".to_owned();
+        let secret_access_key = "".to_owned();
+        let key_id = "".to_owned();
 
-        let client = Client::new_with(EnvironmentProvider::default(), HttpClient::new().unwrap());
-        let client = KmsClient::new_with_client(client, Region::UsWest1);
-        let signer = AwsSigner::new(&client, "".to_owned(), chain_id)
-            .await
-            .unwrap();
+        let client = Client::new_with(
+            StaticProvider::new(access_key, secret_access_key, None, None),
+            HttpClient::new().unwrap(),
+        );
+
+        let client = KmsClient::new_with_client(
+            client,
+            Region::Custom {
+                name: "local".to_owned(),
+                endpoint: "http://localhost:8000".to_owned(),
+            },
+        );
+
+        let signer = AwsSigner::new(&client, key_id, chain_id).await.unwrap();
 
         dbg!(&signer);
 
