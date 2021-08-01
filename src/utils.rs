@@ -9,6 +9,7 @@ use ethers::{
     prelude::{Address, Signature as EthSig, H256},
     utils::keccak256,
 };
+use k256::ecdsa::recoverable::Id;
 use rusoto_kms::{GetPublicKeyResponse, SignResponse};
 
 use crate::AwsSignerError;
@@ -35,8 +36,33 @@ pub(crate) fn rsig_to_ethsig(sig: &RSig) -> EthSig {
     EthSig { r, s, v }
 }
 
+fn check_candidate(sig: &RSig, digest: [u8; 32], vk: &VerifyingKey) -> bool {
+    if let Ok(key) = sig.recover_verify_key_from_digest_bytes(digest.as_ref().into()) {
+        key == *vk
+    } else {
+        false
+    }
+}
+
+pub(crate) fn rsig_from_digest_bytes_trial_recovery(
+    sig: &KSig,
+    digest: [u8; 32],
+    vk: &VerifyingKey,
+) -> RSig {
+    let sig_0 = RSig::new(sig, Id::new(0).unwrap()).unwrap();
+    let sig_1 = RSig::new(sig, Id::new(1).unwrap()).unwrap();
+
+    if check_candidate(&sig_0, digest, vk) {
+        sig_0
+    } else if check_candidate(&sig_1, digest, vk) {
+        sig_1
+    } else {
+        panic!("bad sig");
+    }
+}
+
 pub(crate) fn apply_eip155(sig: &mut EthSig, chain_id: u64) {
-    let v = (chain_id * 2 + 35) + (sig.v % 2);
+    let v = (chain_id * 2 + 35) + ((sig.v - 1) % 2);
     sig.v = v;
 }
 
@@ -54,18 +80,16 @@ pub(crate) fn decode_pubkey(resp: GetPublicKeyResponse) -> Result<VerifyingKey, 
         .public_key
         .ok_or_else(|| AwsSignerError::from("Pubkey not found in response".to_owned()))?;
 
-    let raw = base64::decode(&raw)?;
-    let raw = spki::SubjectPublicKeyInfo::try_from(raw.as_slice())?;
+    let spk = spki::SubjectPublicKeyInfo::try_from(raw.as_ref())?;
+    let key = VerifyingKey::from_sec1_bytes(&spk.subject_public_key)?;
 
-    Ok(VerifyingKey::from_sec1_bytes(&raw.subject_public_key)?)
+    Ok(key)
 }
 
 pub(crate) fn decode_signature(resp: SignResponse) -> Result<KSig, AwsSignerError> {
     let raw = resp
         .signature
         .ok_or_else(|| AwsSignerError::from("Signature not found in response".to_owned()))?;
-
-    let raw = base64::decode(&raw)?;
 
     let mut sig = KSig::from_asn1(&raw)?;
     sig.normalize_s()?;

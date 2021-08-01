@@ -1,7 +1,5 @@
 use ethers::{
-    core::k256::ecdsa::{
-        recoverable::Signature as RSig, Error as K256Error, Signature as KSig, VerifyingKey,
-    },
+    core::k256::ecdsa::{Error as K256Error, Signature as KSig, VerifyingKey},
     prelude::{Address, Signature as EthSig, H256},
     utils::hash_message,
 };
@@ -51,8 +49,6 @@ pub enum AwsSignerError {
     GetPublicKeyError(#[from] RusotoError<GetPublicKeyError>),
     #[error("No default key. Must provide a default key to use this method.")]
     NoDefaultKey,
-    #[error("{0}")]
-    Base64(#[from] base64::DecodeError),
     #[error("{0}")]
     K256(#[from] K256Error),
     #[error("{0}")]
@@ -178,12 +174,10 @@ impl<'a> AwsSigner<'a> {
     async fn sign_digest_with_eip155(&self, digest: H256) -> Result<EthSig, AwsSignerError> {
         let sig = self.sign_digest(digest.into()).await?;
 
-        let sig = RSig::from_trial_recovery(&self.pubkey, digest.as_ref(), &sig)
-            .expect("just produced it, must be good");
+        let sig = utils::rsig_from_digest_bytes_trial_recovery(&sig, digest.into(), &self.pubkey);
 
         let mut sig = rsig_to_ethsig(&sig);
         apply_eip155(&mut sig, self.chain_id);
-        trace!("{}", sig.v);
         Ok(sig)
     }
 }
@@ -221,13 +215,22 @@ impl<'a> ethers::prelude::Signer for AwsSigner<'a> {
 
 #[cfg(test)]
 mod tests {
+
     use ethers::prelude::Signer;
     use rusoto_core::{
         credential::{EnvironmentProvider, StaticProvider},
         Client, HttpClient, Region,
     };
+    use tracing::metadata::LevelFilter;
 
     use super::*;
+
+    fn setup_tracing() {
+        tracing_subscriber::fmt()
+            .with_max_level(LevelFilter::TRACE)
+            .try_init()
+            .unwrap();
+    }
 
     #[allow(dead_code)]
     fn local_client() -> KmsClient {
@@ -238,15 +241,10 @@ mod tests {
             StaticProvider::new(access_key, secret_access_key, None, None),
             HttpClient::new().unwrap(),
         );
-        KmsClient::new_with_client(
-            client,
-            Region::Custom {
-                name: "local".to_owned(),
-                endpoint: "http://localhost:8000".to_owned(),
-            },
-        )
+        KmsClient::new_with_client(client, Region::UsWest1)
     }
 
+    #[allow(dead_code)]
     fn env_client() -> KmsClient {
         let client = Client::new_with(EnvironmentProvider::default(), HttpClient::new().unwrap());
         KmsClient::new_with_client(client, Region::UsWest1)
@@ -255,11 +253,10 @@ mod tests {
     #[tokio::test]
     async fn it_signs_messages() {
         let chain_id = 1;
-        let key_id = "".to_owned();
+        let key_id = std::env::var("AWS_KEY_ID").expect("no key id");
+        setup_tracing();
         let client = env_client();
         let signer = AwsSigner::new(&client, key_id, chain_id).await.unwrap();
-
-        dbg!(&signer);
 
         let message = vec![0, 1, 2, 3];
 

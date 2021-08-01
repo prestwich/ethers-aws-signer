@@ -12,7 +12,6 @@ rusoto_core = "0.47.0"
 rusoto_kms = "0.47.0"
 thiserror = "1.0.26"
 async-trait = "0.1.51"
-base64 = "0.13.0"
 tracing = "0.1.26"
 tracing-futures = "0.2.5"
 hex = "0.4.3"
@@ -20,3 +19,4 @@ spki = "0.4.0"
 
 [dev-dependencies]
 tokio = "*"
+tracing-subscriber = "0.2.19"
