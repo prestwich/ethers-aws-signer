@@ -1,3 +1,5 @@
+use std::convert::TryFrom;
+
 use ethers::{
     core::k256::{
         ecdsa::{recoverable::Signature as RSig, Signature as KSig, VerifyingKey},
@@ -52,10 +54,10 @@ pub(crate) fn decode_pubkey(resp: GetPublicKeyResponse) -> Result<VerifyingKey, 
         .public_key
         .ok_or_else(|| AwsSignerError::from("Pubkey not found in response".to_owned()))?;
 
-    // TODO: we actually need this right?
     let raw = base64::decode(&raw)?;
+    let raw = spki::SubjectPublicKeyInfo::try_from(raw.as_slice())?;
 
-    Ok(VerifyingKey::from_sec1_bytes(&raw).map_err(|e| format!("{}", e))?)
+    Ok(VerifyingKey::from_sec1_bytes(&raw.subject_public_key)?)
 }
 
 pub(crate) fn decode_signature(resp: SignResponse) -> Result<KSig, AwsSignerError> {
@@ -63,8 +65,9 @@ pub(crate) fn decode_signature(resp: SignResponse) -> Result<KSig, AwsSignerErro
         .signature
         .ok_or_else(|| AwsSignerError::from("Signature not found in response".to_owned()))?;
 
-    // TODO: we actually need this right?
     let raw = base64::decode(&raw)?;
 
-    Ok(KSig::from_asn1(&raw).map_err(|e| format!("{}", e))?)
+    let mut sig = KSig::from_asn1(&raw)?;
+    sig.normalize_s()?;
+    Ok(sig)
 }
